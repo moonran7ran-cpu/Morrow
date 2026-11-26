@@ -66,6 +66,35 @@ class CodexAcpRuntimeTest(unittest.TestCase):
         self.assertIsInstance(response.outcome, DeniedOutcome)
         self.assertEqual(response.outcome.outcome, "cancelled")
 
+    def test_model_and_think_controls_become_codex_session_options(self):
+        request = provider_runtime.ChatRuntimeRequest(
+            model="gpt-6.2-astra",
+            system="",
+            system_sections={},
+            history=[],
+            think=True,
+            session_id=1,
+            cache_ttl="off",
+            tool_history=None,
+            extra_tools=None,
+            extra_executor=None,
+            extra_narrations=None,
+            max_tool_rounds=None,
+            closing_tool_names=None,
+            closing_prompt="",
+            round_observer=None,
+            max_elapsed_seconds=None,
+            base_tool_definitions=[],
+            anthropic_cache_profile="",
+        )
+        options = {
+            option.config_id: option.value
+            for option in codex_acp_runtime._session_config_options(request)
+        }
+        self.assertEqual(options["model"], "gpt-6.2-astra")
+        self.assertEqual(options["reasoning_effort"], "high")
+        self.assertEqual(options["mode"], "read-only")
+
 
 if __name__ == "__main__":
     unittest.main()

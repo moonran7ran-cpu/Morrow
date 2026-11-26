@@ -55,6 +55,7 @@ for _proxy_name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
         os.environ.pop(_proxy_name, None)
 
 import chat_engine  # noqa: E402  (after load_dotenv so it sees env vars)
+import codex_acp_runtime  # noqa: E402
 import tools  # noqa: E402  (内置工具：便签/待办/天气/记忆)
 import mcp_client  # noqa: E402
 import recall_sync  # noqa: E402
@@ -5555,7 +5556,7 @@ def create_provider():
     name = (data.get("name") or "").strip()
     if not name:
         return jsonify({"error": "name required"}), 400
-    fmt = "claude" if data.get("format") == "claude" else "openai"
+    fmt = data.get("format") if data.get("format") in ("openai", "claude", "codex") else "openai"
     db = get_db()
     nxt = db.execute(
         "SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM providers"
@@ -5589,7 +5590,7 @@ def update_provider(pid):
     name = (data.get("name") or "").strip()
     if not name:
         return jsonify({"error": "name required"}), 400
-    fmt = "claude" if data.get("format") == "claude" else "openai"
+    fmt = data.get("format") if data.get("format") in ("openai", "claude", "codex") else "openai"
     db.execute(
         "UPDATE providers SET name = ?, format = ?, api_key = ?, api_url = ?, "
         "cache = ?, cache_mode = ?, models = ? WHERE id = ?",
@@ -9462,6 +9463,11 @@ def fetch_provider_models():
     url = (data.get("api_url") or "").strip().rstrip("/")
     key = (data.get("api_key") or "").strip()
     fmt = data.get("format") or "openai"
+    if fmt == "codex":
+        try:
+            return jsonify({"models": codex_acp_runtime.available_models()})
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"error": str(exc) or type(exc).__name__}), 502
     if not url:
         return jsonify({"error": "api_url required"}), 400
     try:

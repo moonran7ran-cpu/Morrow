@@ -524,7 +524,9 @@ def get_provider(provider_id):
         conn.close()
     except sqlite3.Error:
         return None
-    if row is None or not row["api_url"]:
+    if row is None:
+        return None
+    if (row["format"] or "openai") != "codex" and not row["api_url"]:
         return None
     return {
         "base_url": row["api_url"].rstrip("/"),
@@ -1141,7 +1143,7 @@ def stream_chat(session_id, model=None, think=False, exclude_id=None, provider_i
         yield ("error", {"status": None, "message": "这个供应商还没有配置 API key"})
         return
 
-    chosen = model or LLM_MODEL
+    chosen = (model or "") if runtime.kind == "codex" else (model or LLM_MODEL)
     recall_query = latest_user_text(session_id, exclude_id=exclude_id)
     system_sections = build_system_sections(
         recall_query, recall_session_id=session_id,

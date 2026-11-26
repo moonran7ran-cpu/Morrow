@@ -3865,6 +3865,7 @@
               <select id="provFormat" hidden aria-hidden="true">
                 <option value="openai">OpenAI</option>
                 <option value="claude">Anthropic</option>
+                <option value="codex">Codex Subscription</option>
               </select></div></div>
             <div class="field"><label>名称</label><input id="provName"></div>
             <div class="field"><label>API Key</label><input id="provKey" type="password" placeholder="sk-…"></div>
@@ -10314,6 +10315,7 @@ async function loadProviders(){
   try{const r=await(await api("/api/providers")).json();PROVIDERS=Array.isArray(r)?r:[];}catch{PROVIDERS=[];}
   renderProvList();renderAssistantModels();
 }
+function providerFormatLabel(value){return value==="claude"?"Anthropic":value==="codex"?"Codex Subscription":"OpenAI";}
 function renderProvList(){
   const el=$("#provList");if(!el)return;el.innerHTML="";
   if(!PROVIDERS.length){el.innerHTML='<div class="prov-empty caption">还没有供应商。点右上角 ＋ 添加一个。</div>';return;}
@@ -10322,7 +10324,7 @@ function renderProvList(){
     b.innerHTML='<div class="pinfo"><div class="pname"></div><div class="pmeta"></div></div>'+
       '<span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 6l6 6-6 6"/></svg></span>';
     b.querySelector(".pname").textContent=p.name;
-    b.querySelector(".pmeta").textContent=(p.format==="claude"?"Anthropic":"OpenAI")+" · "+(p.models.length?p.models.length+" 个模型":"未加模型");
+    b.querySelector(".pmeta").textContent=providerFormatLabel(p.format)+" · "+(p.models.length?p.models.length+" 个模型":"未加模型");
     b.onclick=()=>openProvEdit(p);el.appendChild(b);
   });
 }
@@ -10338,7 +10340,7 @@ function openProvEdit(p,recordHistory=true,animate=true){
   $("#provEditTitle").textContent=p?"编辑提供商":"添加供应商";
   $("#provDel").hidden=!p;
   $("#provFormat").value=p?p.format:"openai";
-  $("#provFormatButton").textContent=$("#provFormat").value==="claude"?"Anthropic":"OpenAI";
+  $("#provFormatButton").textContent=providerFormatLabel($("#provFormat").value);
   $("#provName").value=p?p.name:"";
   $("#provKey").value=p?p.api_key:"";
   $("#provUrl").value=p?p.api_url:"";
@@ -10353,9 +10355,13 @@ function openProvEdit(p,recordHistory=true,animate=true){
   if(recordHistory)navigateSettingsDetail({type:"provider",panel:"model",id:p?.id??null});
 }
 function syncCacheRow(){
-  const isClaude=$("#provFormat").value==="claude";
+  const fmt=$("#provFormat").value;
+  const isClaude=fmt==="claude",isCodex=fmt==="codex";
   $("#provCacheRow").hidden=!isClaude;
   $("#provCacheModeField").hidden=!isClaude||!$("#provCache").checked;
+  $("#provKey").closest(".field").hidden=isCodex;
+  $("#provUrl").closest(".field").hidden=isCodex;
+  $("#provFetch").textContent=isCodex?"获取订阅模型":"获取";
 }
 const PROVIDER_CACHE_MODES=[
   {value:"anthropic_explicit_sticky",label:"Anthropic 显式断点 + 稳定 user_id"},
@@ -10368,6 +10374,8 @@ function modelPriceFields(m){
   const fmt=$("#provFormat").value;
   const id=(m.id||"").toLowerCase();
   const isClaude=fmt==="claude";
+  const isCodex=fmt==="codex";
+  if(isCodex)return {fields:[],note:"ChatGPT 订阅通道，不按 API 单价计费。"};
   const isGlm=/\bglm|zhipu/.test(id);
   const isDeepseek=/deepseek/.test(id);
   const fields=[
@@ -10417,8 +10425,8 @@ function renderEditModels(){
     el.appendChild(row);
   });
 }
-function setProviderFormat(value){$("#provFormat").value=value;$("#provFormatButton").textContent=value==="claude"?"Anthropic":"OpenAI";syncCacheRow();renderEditModels();}
-$("#provFormatButton").onclick=()=>openChoiceSheet({title:"兼容格式",value:$("#provFormat").value,items:[{value:"openai",label:"OpenAI"},{value:"claude",label:"Anthropic"}],onChoose:setProviderFormat});
+function setProviderFormat(value){$("#provFormat").value=value;$("#provFormatButton").textContent=providerFormatLabel(value);if(value==="codex"&&!$("#provName").value.trim())$("#provName").value="Codex Subscription";syncCacheRow();renderEditModels();}
+$("#provFormatButton").onclick=()=>openChoiceSheet({title:"兼容格式",value:$("#provFormat").value,items:[{value:"openai",label:"OpenAI"},{value:"claude",label:"Anthropic"},{value:"codex",label:"Codex Subscription"}],onChoose:setProviderFormat});
 $("#provCache").onchange=syncCacheRow;
 $("#provAdd").onclick=()=>openProvEdit(null);
 $(".prov-back").onclick=()=>backToAppLevel(2,showProvList);
@@ -10438,7 +10446,7 @@ async function manualAddModel(){
 }
 $("#provFetch").onclick=async()=>{
   const body={api_url:$("#provUrl").value.trim(),api_key:$("#provKey").value.trim(),format:$("#provFormat").value};
-  if(!body.api_url){toast("先填 API URL");return;}
+  if(body.format!=="codex"&&!body.api_url){toast("先填 API URL");return;}
   toast("获取中…");
   try{
     const r=await(await api("/api/providers/fetch-models",{method:"POST",body:JSON.stringify(body)})).json();

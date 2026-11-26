@@ -33,6 +33,7 @@ from acp.schema import (
     ClientCapabilities,
     DeniedOutcome,
     Implementation,
+    InitialSessionConfigOption2,
     RequestPermissionResponse,
     SystemPrompt,
     TextContentBlock,
@@ -203,6 +204,21 @@ def _runtime_paths() -> tuple[Path, str, Path, Path]:
     return acp_bin, codex_bin, codex_home, workdir
 
 
+def _session_config_options(request: Any) -> list[InitialSessionConfigOption2]:
+    """Translate Morrow model controls into Codex ACP session options."""
+    options = [
+        InitialSessionConfigOption2(config_id="mode", value="read-only"),
+        InitialSessionConfigOption2(
+            config_id="reasoning_effort",
+            value="high" if bool(getattr(request, "think", False)) else "low",
+        ),
+    ]
+    model = str(getattr(request, "model", "") or "").strip()
+    if model:
+        options.append(InitialSessionConfigOption2(config_id="model", value=model))
+    return options
+
+
 async def _run_turn(
     request: Any,
     event_queue: queue.Queue[Any],
@@ -270,6 +286,7 @@ async def _run_turn(
                 cwd=str(workdir),
                 mcp_servers=[],
                 system_prompt=system_prompt,
+                config_options=_session_config_options(request),
             ),
             timeout=30,
         )
@@ -307,6 +324,90 @@ async def _run_turn(
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(proc.stderr.read(), timeout=1)
 
+
+
+async def _query_available_models() -> list[str]:
+    """Read the model choices advertised by the authenticated Codex ACP session."""
+    acp_bin, codex_bin, codex_home, workdir = _runtime_paths()
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(codex_home),
+            "CODEX_PATH": codex_bin,
+            "NO_BROWSER": "1",
+            "INITIAL_AGENT_MODE": "read-only",
+        }
+    )
+    proc = await asyncio.create_subprocess_exec(
+        str(acp_bin),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(workdir),
+        env=env,
+        start_new_session=True,
+    )
+    if proc.stdin is None or proc.stdout is None:
+        raise RuntimeError("codex-acp did not expose stdio")
+
+    client = _MorrowCodexClient(queue.Queue(), threading.Event())
+    conn = connect_to_agent(
+        client,
+        proc.stdin,
+        proc.stdout,
+        use_unstable_protocol=True,
+    )
+    try:
+        await asyncio.wait_for(
+            conn.initialize(
+                protocol_version=PROTOCOL_VERSION,
+                client_capabilities=ClientCapabilities(),
+                client_info=Implementation(
+                    name="morrow-models",
+                    title="Morrow",
+                    version="codex-acp-phase1",
+                ),
+            ),
+            timeout=20,
+        )
+        session = await asyncio.wait_for(
+            conn.new_session(
+                cwd=str(workdir),
+                mcp_servers=[],
+                config_options=[
+                    InitialSessionConfigOption2(
+                        config_id="mode",
+                        value="read-only",
+                    )
+                ],
+            ),
+            timeout=30,
+        )
+        for option in session.config_options or []:
+            if getattr(option, "id", "") != "model":
+                continue
+            return [
+                str(getattr(item, "value", "") or "").strip()
+                for item in (getattr(option, "options", None) or [])
+                if str(getattr(item, "value", "") or "").strip()
+            ]
+        return []
+    finally:
+        with contextlib.suppress(Exception):
+            await conn.close()
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGTERM)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.wait(), timeout=5)
+        if proc.stderr is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.stderr.read(), timeout=1)
+
+
+def available_models() -> list[str]:
+    """Return authenticated Codex model IDs for the Settings model picker."""
+    return asyncio.run(_query_available_models())
 
 def _worker(
     request: Any,
