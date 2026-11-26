@@ -83,6 +83,10 @@ class IdentityTest(unittest.TestCase):
                 identity.save_identity(self.db, {"user_name": "June", "assistant_name": value})
             self.assertEqual(identity.get_identity(self.db)["user_name"], "你")
 
+    def test_blank_persona_has_no_upstream_identity_fallback(self):
+        self.assertEqual(app.chat_engine.DEFAULT_PERSONA, "")
+        self.assertIn("你是 Morrow", app.chat_engine.LEGACY_DEFAULT_PERSONA)
+
     def test_previous_preview_and_default_persona_upgrade(self):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / 'synthetic.db')
@@ -91,7 +95,7 @@ class IdentityTest(unittest.TestCase):
                 with closing(sqlite3.connect(path)) as db:
                     db.execute("DELETE FROM settings WHERE key IN ('note_preview_copy_v2','persona_empty_default_v1')")
                     db.execute("UPDATE notes SET content='这里可以留一句话，等下次回来再看。'")
-                    db.execute('UPDATE persona SET content=?', (app.chat_engine.DEFAULT_PERSONA,))
+                    db.execute('UPDATE persona SET content=?', (app.chat_engine.LEGACY_DEFAULT_PERSONA,))
                     db.commit()
                 app.init_db()
                 with closing(sqlite3.connect(path)) as db:

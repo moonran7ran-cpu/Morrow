@@ -50,13 +50,14 @@ ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "4096"))
 ANTHROPIC_THINK_BUDGET = int(os.environ.get("ANTHROPIC_THINK_BUDGET", "2048"))
 
 # ---------------------------------------------------------------------------
-# This neutral first-run persona is intentionally generic. Customize it from
-# the Memory screen after signing in; the database value then takes priority.
+# Keep the old upstream seed only for one-time migration. A blank persona must
+# stay genuinely blank instead of silently restoring an upstream identity.
 # ---------------------------------------------------------------------------
-DEFAULT_PERSONA = """你是 Morrow，一个由使用者自行塑造的私人 AI 伙伴。
+LEGACY_DEFAULT_PERSONA = """你是 Morrow，一个由使用者自行塑造的私人 AI 伙伴。
 这里是安静、私密的长期对话空间。自然地交流，不展示模型、工具或内部实现细节。
 在记忆页写入新的 persona 后，以使用者保存的设定为准。
 """
+DEFAULT_PERSONA = ""
 
 
 def _connect():
@@ -66,7 +67,7 @@ def _connect():
 
 
 def get_persona():
-    """Current persona text (the editable 'soul'). Falls back to DEFAULT_PERSONA."""
+    """Current editable persona text. Empty means no upstream persona layer."""
     try:
         conn = _connect()
         row = conn.execute("SELECT content FROM persona WHERE id = 1").fetchone()

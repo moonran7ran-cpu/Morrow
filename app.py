@@ -1057,7 +1057,7 @@ def init_db():
         )
         conn.execute("INSERT INTO settings(key,value) VALUES ('note_preview_copy_v2','1')")
     if conn.execute("SELECT 1 FROM settings WHERE key='persona_empty_default_v1'").fetchone() is None:
-        conn.execute("UPDATE persona SET content='' WHERE id=1 AND content=?", (chat_engine.DEFAULT_PERSONA,))
+        conn.execute("UPDATE persona SET content='' WHERE id=1 AND content=?", (chat_engine.LEGACY_DEFAULT_PERSONA,))
         conn.execute("INSERT INTO settings(key,value) VALUES ('persona_empty_default_v1','1')")
     # Seed default weather city (changeable in 设置).
     if conn.execute("SELECT 1 FROM settings WHERE key='weather_city'").fetchone() is None:

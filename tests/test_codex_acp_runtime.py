@@ -1,8 +1,10 @@
 import asyncio
+import json
 import queue
 import threading
 import unittest
 from unittest import mock
+from pathlib import Path
 
 import codex_acp_runtime
 import provider_runtime
@@ -45,8 +47,25 @@ class CodexAcpRuntimeTest(unittest.TestCase):
             "[user] hi\n\n[assistant] hello",
         )
         self.assertTrue(text.startswith("IDENTITY"))
-        self.assertIn("Conversation history supplied by Morrow", text)
+        self.assertIn("Conversation history", text)
         self.assertIn("[assistant] hello", text)
+        self.assertNotIn("supplied by Morrow", text)
+
+    def test_codex_system_prompt_overrides_native_agent_persona(self):
+        prompt = codex_acp_runtime._acp_system_prompt("IDENTITY")
+        self.assertIsNotNone(prompt)
+        self.assertEqual(prompt.mode, "override")
+        self.assertEqual(prompt.content[0].text, "IDENTITY")
+
+    def test_pinned_codex_adapter_reapplies_base_instructions_override(self):
+        root = Path(__file__).parents[1] / "runtime" / "codex-acp"
+        package = json.loads((root / "package.json").read_text())
+        self.assertEqual(package["dependencies"]["@agentclientprotocol/codex-acp"], "2.12.0")
+        self.assertEqual(package["scripts"]["postinstall"], "node apply-morrow-patch.mjs")
+        patch = (root / "apply-morrow-patch.mjs").read_text()
+        self.assertIn("baseInstructions", patch)
+        self.assertIn('value.mode !== "override"', patch)
+        self.assertIn("MORROW_PATCH_BASE_INSTRUCTIONS_OVERRIDE", patch)
 
     def test_non_text_parts_are_marked_not_silently_flattened(self):
         text = codex_acp_runtime._plain_content(
