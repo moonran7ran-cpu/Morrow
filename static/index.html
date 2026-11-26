@@ -3870,6 +3870,17 @@
             <div class="field"><label>名称</label><input id="provName"></div>
             <div class="field"><label>API Key</label><input id="provKey" type="password" placeholder="sk-…"></div>
             <div class="field"><label>API URL</label><input id="provUrl" placeholder="https://……/v1"></div>
+            <div class="field" id="provCodexAuth" hidden>
+              <div class="field-head"><label>ChatGPT 订阅授权</label><button class="mini-btn" id="provCodexCheck" type="button">检查状态</button></div>
+              <div class="caption" id="provCodexStatus" style="padding:3px 0 8px">正在检查…</div>
+              <button class="mini-btn" id="provCodexLogin" type="button">重新授权</button>
+              <div id="provCodexInstructions" hidden style="margin-top:10px">
+                <div class="caption">设备码</div>
+                <div id="provCodexCode" style="font-size:18px;font-weight:700;letter-spacing:.08em;margin:4px 0 8px"></div>
+                <a class="mini-btn" id="provCodexUrl" target="_blank" rel="noopener noreferrer">打开 OpenAI 授权页面</a>
+                <div class="caption" style="margin-top:8px">授权完成后回到这里，点「检查状态」。</div>
+              </div>
+            </div>
             <div class="toggle-row" id="provCacheRow" hidden>
               <div class="desc"><div class="t">提示缓存适配</div><div class="s">选择这个供应商支持的缓存参数格式</div></div>
               <label class="switch"><input type="checkbox" id="provCache"><span class="slider"></span></label>
@@ -10348,6 +10359,7 @@ function openProvEdit(p,recordHistory=true,animate=true){
   $("#provCacheMode").value=p?(p.cache_mode||"anthropic_explicit_sticky"):"anthropic_explicit_sticky";
   syncProviderCacheModeButton();
   syncCacheRow();renderEditModels();
+  if($("#provFormat").value==="codex")refreshCodexAuthStatus();
   const list=$("#prov-list-view"),edit=$("#prov-edit-view");
   if(animate)transitionSettingsLayer($("#set-panel-model"),list,edit,180);
   else{list.hidden=true;edit.hidden=false;}
@@ -10361,8 +10373,60 @@ function syncCacheRow(){
   $("#provCacheModeField").hidden=!isClaude||!$("#provCache").checked;
   $("#provKey").closest(".field").hidden=isCodex;
   $("#provUrl").closest(".field").hidden=isCodex;
+  $("#provCodexAuth").hidden=!isCodex;
   $("#provFetch").textContent=isCodex?"获取订阅模型":"获取";
 }
+
+function showCodexAuthInstructions(data){
+  const box=$("#provCodexInstructions"),code=$("#provCodexCode"),link=$("#provCodexUrl");
+  if(!data?.userCode||!data?.verificationUrl){box.hidden=true;return;}
+  try{
+    const url=new URL(data.verificationUrl);
+    if(url.protocol!=="https:"||url.hostname!=="auth.openai.com")throw new Error("invalid auth url");
+    code.textContent=data.userCode;
+    link.href=url.href;
+    box.hidden=false;
+  }catch{box.hidden=true;}
+}
+async function refreshCodexAuthStatus(){
+  if($("#provFormat").value!=="codex")return;
+  const status=$("#provCodexStatus"),check=$("#provCodexCheck");
+  status.textContent="正在检查 Codex 登录状态…";check.disabled=true;
+  try{
+    const response=await api("/api/codex/status");
+    const data=await response.json();
+    if(!response.ok||!data.ok)throw new Error(data.error||"状态不可用");
+    if(data.authenticated){
+      status.textContent="已登录 ChatGPT 订阅，可以直接使用。";
+      $("#provCodexInstructions").hidden=true;
+    }else if(data.login_active){
+      status.textContent="等待你完成 OpenAI 网页授权。";
+      showCodexAuthInstructions({userCode:data.user_code,verificationUrl:data.verification_url});
+    }else{
+      status.textContent="当前未登录。点「重新授权」即可恢复。";
+      $("#provCodexInstructions").hidden=true;
+    }
+  }catch(error){
+    status.textContent="登录状态暂不可用："+error.message;
+  }finally{check.disabled=false;}
+}
+async function startCodexDeviceLogin(){
+  const button=$("#provCodexLogin"),status=$("#provCodexStatus");
+  button.disabled=true;status.textContent="正在生成设备授权码…";
+  try{
+    const response=await api("/api/codex/login/device",{method:"POST",body:"{}"});
+    const data=await response.json();
+    if(!response.ok||!data.ok||!data.userCode||!data.verificationUrl)throw new Error(data.error||"无法生成授权码");
+    showCodexAuthInstructions(data);
+    status.textContent="设备码已生成。去 OpenAI 页面完成授权，再回来检查状态。";
+  }catch(error){
+    status.textContent="重新授权失败："+error.message;
+  }finally{button.disabled=false;}
+}
+$("#provCodexCheck").onclick=refreshCodexAuthStatus;
+$("#provCodexLogin").onclick=startCodexDeviceLogin;
+window.addEventListener("focus",()=>{if($("#provFormat").value==="codex"&&!$("#provCodexAuth").hidden)refreshCodexAuthStatus();});
+
 const PROVIDER_CACHE_MODES=[
   {value:"anthropic_explicit_sticky",label:"Anthropic 显式断点 + 稳定 user_id"},
   {value:"anthropic_explicit",label:"Anthropic 显式断点"},
@@ -10425,7 +10489,7 @@ function renderEditModels(){
     el.appendChild(row);
   });
 }
-function setProviderFormat(value){$("#provFormat").value=value;$("#provFormatButton").textContent=providerFormatLabel(value);if(value==="codex"&&!$("#provName").value.trim())$("#provName").value="Codex Subscription";syncCacheRow();renderEditModels();}
+function setProviderFormat(value){$("#provFormat").value=value;$("#provFormatButton").textContent=providerFormatLabel(value);if(value==="codex"&&!$("#provName").value.trim())$("#provName").value="Codex Subscription";syncCacheRow();renderEditModels();if(value==="codex")refreshCodexAuthStatus();}
 $("#provFormatButton").onclick=()=>openChoiceSheet({title:"兼容格式",value:$("#provFormat").value,items:[{value:"openai",label:"OpenAI"},{value:"claude",label:"Anthropic"},{value:"codex",label:"Codex Subscription"}],onChoose:setProviderFormat});
 $("#provCache").onchange=syncCacheRow;
 $("#provAdd").onclick=()=>openProvEdit(null);

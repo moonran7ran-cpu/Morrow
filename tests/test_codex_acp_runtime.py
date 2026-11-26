@@ -66,6 +66,16 @@ class CodexAcpRuntimeTest(unittest.TestCase):
         self.assertIsInstance(response.outcome, DeniedOutcome)
         self.assertEqual(response.outcome.outcome, "cancelled")
 
+    def test_device_login_parser_accepts_official_codex_output(self):
+        text = (
+            "\x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n"
+            "Enter this one-time code\n"
+            "\x1b[94m44I2-MJKZR\x1b[0m"
+        )
+        url, code = codex_acp_runtime._parse_device_login_output(text)
+        self.assertEqual(url, "https://auth.openai.com/codex/device")
+        self.assertEqual(code, "44I2-MJKZR")
+
     def test_model_and_think_controls_become_codex_session_options(self):
         request = provider_runtime.ChatRuntimeRequest(
             model="gpt-6.2-astra",

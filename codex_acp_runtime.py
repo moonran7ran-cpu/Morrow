@@ -451,3 +451,199 @@ def stream_codex_acp(request: Any) -> Iterable[tuple[str, Any]]:
             yield item
     finally:
         cancel_event.set()
+
+
+# ---------------------------------------------------------------------------
+# User-facing Codex subscription login recovery
+# ---------------------------------------------------------------------------
+
+_LOGIN_LOCK = threading.Lock()
+_LOGIN_READY = threading.Event()
+_LOGIN_STATE: dict[str, Any] = {
+    "process": None,
+    "verification_url": "",
+    "user_code": "",
+    "started_at": 0.0,
+    "completed": None,
+    "error": "",
+}
+
+
+def _strip_ansi(text: str) -> str:
+    import re
+
+    return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(text or ""))
+
+
+def _parse_device_login_output(text: str) -> tuple[str, str]:
+    import re
+
+    clean = _strip_ansi(text)
+    url_match = re.search(r"https://auth\.openai\.com/codex/device\b", clean)
+    code_match = re.search(r"\b[A-Z0-9]{4,8}-[A-Z0-9]{4,8}\b", clean)
+    return (
+        url_match.group(0) if url_match else "",
+        code_match.group(0) if code_match else "",
+    )
+
+
+def _login_status_raw() -> dict[str, Any]:
+    import subprocess
+
+    _, codex_bin, codex_home, _ = _runtime_paths()
+    env = os.environ.copy()
+    env["HOME"] = str(codex_home)
+    try:
+        result = subprocess.run(
+            [codex_bin, "login", "status"],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        detail = _strip_ansi(result.stdout).strip()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "authenticated": False,
+            "method": None,
+            "detail": "",
+            "error": str(exc) or type(exc).__name__,
+        }
+
+    authenticated = result.returncode == 0 and "Logged in" in detail
+    method = None
+    if authenticated:
+        if "ChatGPT" in detail:
+            method = "chatgpt"
+        elif "API key" in detail:
+            method = "api_key"
+        else:
+            method = "other"
+    return {
+        "authenticated": authenticated,
+        "method": method,
+        "detail": detail,
+        "error": "" if authenticated else detail,
+    }
+
+
+def login_status() -> dict[str, Any]:
+    status = _login_status_raw()
+    with _LOGIN_LOCK:
+        proc = _LOGIN_STATE.get("process")
+        active = bool(proc is not None and proc.poll() is None)
+        status.update(
+            {
+                "login_active": active,
+                "verification_url": _LOGIN_STATE.get("verification_url") or "",
+                "user_code": _LOGIN_STATE.get("user_code") or "",
+                "login_completed": _LOGIN_STATE.get("completed"),
+                "login_error": _LOGIN_STATE.get("error") or "",
+            }
+        )
+    return status
+
+
+def _watch_device_login(proc: Any) -> None:
+    lines: list[str] = []
+    try:
+        if proc.stdout is not None:
+            for raw in proc.stdout:
+                clean = _strip_ansi(raw).rstrip()
+                if clean:
+                    lines.append(clean)
+                    if len(lines) > 40:
+                        lines = lines[-40:]
+                url, code = _parse_device_login_output("\n".join(lines))
+                if url and code:
+                    with _LOGIN_LOCK:
+                        _LOGIN_STATE["verification_url"] = url
+                        _LOGIN_STATE["user_code"] = code
+                    _LOGIN_READY.set()
+        return_code = proc.wait()
+        status = _login_status_raw()
+        with _LOGIN_LOCK:
+            _LOGIN_STATE["completed"] = bool(status.get("authenticated"))
+            if return_code != 0 and not status.get("authenticated"):
+                _LOGIN_STATE["error"] = (
+                    "\n".join(lines[-8:]).strip()
+                    or f"codex login exited with status {return_code}"
+                )
+    except Exception as exc:  # noqa: BLE001
+        with _LOGIN_LOCK:
+            _LOGIN_STATE["completed"] = False
+            _LOGIN_STATE["error"] = str(exc) or type(exc).__name__
+    finally:
+        _LOGIN_READY.set()
+
+
+def start_device_login() -> dict[str, Any]:
+    import subprocess
+    import time
+
+    _, codex_bin, codex_home, workdir = _runtime_paths()
+    env = os.environ.copy()
+    env["HOME"] = str(codex_home)
+
+    with _LOGIN_LOCK:
+        current = _LOGIN_STATE.get("process")
+        started_at = float(_LOGIN_STATE.get("started_at") or 0.0)
+        if current is not None and current.poll() is None:
+            if time.time() - started_at < 16 * 60:
+                url = _LOGIN_STATE.get("verification_url") or ""
+                code = _LOGIN_STATE.get("user_code") or ""
+                if url and code:
+                    return {
+                        "verification_url": url,
+                        "user_code": code,
+                        "reused": True,
+                    }
+            else:
+                with contextlib.suppress(Exception):
+                    current.terminate()
+
+        _LOGIN_READY.clear()
+        _LOGIN_STATE.update(
+            {
+                "process": None,
+                "verification_url": "",
+                "user_code": "",
+                "started_at": time.time(),
+                "completed": None,
+                "error": "",
+            }
+        )
+        proc = subprocess.Popen(
+            [codex_bin, "login", "--device-auth"],
+            env=env,
+            cwd=str(workdir),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+        )
+        _LOGIN_STATE["process"] = proc
+        thread = threading.Thread(
+            target=_watch_device_login,
+            args=(proc,),
+            name="morrow-codex-device-login",
+            daemon=True,
+        )
+        thread.start()
+
+    _LOGIN_READY.wait(timeout=12)
+    with _LOGIN_LOCK:
+        url = _LOGIN_STATE.get("verification_url") or ""
+        code = _LOGIN_STATE.get("user_code") or ""
+        error = _LOGIN_STATE.get("error") or ""
+    if not url or not code:
+        raise RuntimeError(error or "Codex did not return a device authorization code")
+    return {
+        "verification_url": url,
+        "user_code": code,
+        "reused": False,
+    }

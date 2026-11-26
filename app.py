@@ -9450,6 +9450,32 @@ def restore_ombre_recall_card():
     return jsonify({"ok": True, "message": result, "bucket_id": bucket_id})
 
 
+@app.get("/api/codex/status")
+@require_auth
+def codex_status():
+    try:
+        return jsonify({"ok": True, **codex_acp_runtime.login_status()})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc) or type(exc).__name__}), 503
+
+
+@app.post("/api/codex/login/device")
+@require_auth
+def codex_device_login():
+    try:
+        login = codex_acp_runtime.start_device_login()
+        return jsonify(
+            {
+                "ok": True,
+                "verificationUrl": login["verification_url"],
+                "userCode": login["user_code"],
+                "reused": bool(login.get("reused")),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc) or type(exc).__name__}), 500
+
+
 @app.post("/api/providers/fetch-models")
 @require_auth
 def fetch_provider_models():

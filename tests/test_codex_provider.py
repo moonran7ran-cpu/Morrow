@@ -85,6 +85,49 @@ class CodexProviderApiTest(unittest.TestCase):
         )
         models.assert_called_once_with()
 
+    @mock.patch(
+        "app.codex_acp_runtime.login_status",
+        return_value={
+            "authenticated": True,
+            "method": "chatgpt",
+            "detail": "Logged in using ChatGPT",
+            "error": "",
+            "login_active": False,
+            "verification_url": "",
+            "user_code": "",
+            "login_completed": None,
+            "login_error": "",
+        },
+    )
+    def test_codex_status_reports_subscription_state_without_credentials(self, status):
+        response = self.client.get("/api/codex/status")
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["authenticated"])
+        self.assertEqual(body["method"], "chatgpt")
+        self.assertNotIn("token", body)
+        self.assertNotIn("api_key", body)
+        status.assert_called_once_with()
+
+    @mock.patch(
+        "app.codex_acp_runtime.start_device_login",
+        return_value={
+            "verification_url": "https://auth.openai.com/codex/device",
+            "user_code": "ABCD-12345",
+            "reused": False,
+        },
+    )
+    def test_device_login_endpoint_returns_only_browser_handoff(self, start):
+        response = self.client.post("/api/codex/login/device", json={})
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["verificationUrl"], "https://auth.openai.com/codex/device")
+        self.assertEqual(body["userCode"], "ABCD-12345")
+        self.assertNotIn("token", body)
+        self.assertNotIn("api_key", body)
+        start.assert_called_once_with()
+
 
 class CodexProviderFrontendContractTest(unittest.TestCase):
     def test_provider_editor_has_subscription_mode_without_api_fields(self):
@@ -95,6 +138,11 @@ class CodexProviderFrontendContractTest(unittest.TestCase):
         self.assertIn('$("#provUrl").closest(".field").hidden=isCodex', html)
         self.assertIn('body.format!=="codex"&&!body.api_url', html)
         self.assertIn('label:"Codex Subscription"', html)
+        self.assertIn('id="provCodexAuth"', html)
+        self.assertIn('id="provCodexLogin"', html)
+        self.assertIn('api("/api/codex/status")', html)
+        self.assertIn('api("/api/codex/login/device"', html)
+        self.assertIn('url.hostname!=="auth.openai.com"', html)
 
 
 if __name__ == "__main__":
