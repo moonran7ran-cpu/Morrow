@@ -32,6 +32,7 @@ class ChatRuntimeRequest:
     history: list[dict[str, Any]]
     think: bool
     session_id: int
+    current_user_message_id: int | None
     cache_ttl: str
     tool_history: list[dict[str, Any]] | None
     extra_tools: Any

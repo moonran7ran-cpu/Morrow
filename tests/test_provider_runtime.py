@@ -89,6 +89,7 @@ class ProviderRuntimeTest(unittest.TestCase):
             history=[],
             think=False,
             session_id=1,
+            current_user_message_id=None,
             cache_ttl="off",
             tool_history=None,
             extra_tools=None,

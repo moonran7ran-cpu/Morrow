@@ -1,27 +1,28 @@
-"""Codex subscription transport through Agent Client Protocol (ACP).
+"""Codex subscription helpers backed by Agent Client Protocol (ACP).
 
-This module is deliberately narrow.  It lets Morrow use an existing ChatGPT
-Codex login for text generation while keeping Companion context and permissions
-above the provider boundary.
+ACP remains useful for login recovery, model discovery, and a legacy fresh-turn
+adapter. Persistent Companion chat lives in ``codex_app_server_runtime`` because
+codex-acp 2.12 cannot reliably reopen a session across adapter processes.
 
-Phase 1 constraints:
-- a fresh ACP session is created for each Morrow turn;
-- Morrow supplies the system prompt and serialized conversation history;
-- no MCP servers are exposed to Codex;
+This module also owns the small Morrow-side thread binding helpers shared by the
+native app-server transport. Morrow SQLite remains canonical; provider threads
+are disposable runtime rooms.
+
+- no MCP servers are exposed to Codex by the ACP fallback;
 - permission requests are always denied;
 - the Codex session runs in read-only mode inside a dedicated empty workspace.
-
-Session reuse/resume, model selection, images, usage accounting, and Companion
-tool brokering are intentionally deferred to later phases.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import os
 import queue
 import signal
+import sqlite3
 import threading
 from pathlib import Path
 from typing import Any, Iterable
@@ -43,7 +44,232 @@ _ROOT = Path(__file__).resolve().parent
 _DEFAULT_ACP_BIN = _ROOT / "runtime" / "codex-acp" / "node_modules" / ".bin" / "codex-acp"
 _DEFAULT_CODEX_HOME = _ROOT / "data" / "codex-home"
 _DEFAULT_WORKDIR = _ROOT / "data" / "codex-workspace"
+_DEFAULT_DB_PATH = _ROOT / "data" / "nook.db"
 _DONE = object()
+_SESSION_LOCKS: dict[int, threading.Lock] = {}
+_SESSION_LOCKS_GUARD = threading.Lock()
+
+_STATE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS provider_conversation_state (
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    provider_kind TEXT NOT NULL,
+    remote_session_id TEXT NOT NULL DEFAULT '',
+    stable_prompt_hash TEXT NOT NULL DEFAULT '',
+    synced_through_message_id INTEGER,
+    history_fingerprint TEXT NOT NULL DEFAULT '',
+    pending_user_message_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+    PRIMARY KEY(session_id, provider_kind)
+)
+"""
+
+_HISTORY_COLUMNS = (
+    "id", "role", "content", "attachments", "reasoning", "reasoning_ms",
+    "versions", "active", "hidden", "proactive", "tool_log", "created_at",
+)
+
+
+def _db_path() -> Path:
+    return Path(os.environ.get("DB_PATH", str(_DEFAULT_DB_PATH))).expanduser()
+
+
+def _state_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(_db_path())
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(_STATE_TABLE_SQL)
+    return conn
+
+
+def _conversation_lock(session_id: Any) -> threading.Lock:
+    key = int(session_id or 0)
+    with _SESSION_LOCKS_GUARD:
+        lock = _SESSION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _SESSION_LOCKS[key] = lock
+        return lock
+
+
+def _history_fingerprint(
+    conn: sqlite3.Connection,
+    session_id: int,
+    through_message_id: int | None,
+) -> str:
+    if not through_message_id:
+        rows: list[sqlite3.Row] = []
+    else:
+        columns = ",".join(_HISTORY_COLUMNS)
+        rows = conn.execute(
+            f"SELECT {columns} FROM messages "
+            "WHERE session_id=? AND id<=? ORDER BY id ASC",
+            (session_id, int(through_message_id)),
+        ).fetchall()
+    payload = [
+        [row[column] for column in _HISTORY_COLUMNS]
+        for row in rows
+    ]
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _stable_prompt_text(request: Any) -> str:
+    sections = getattr(request, "system_sections", None) or {}
+    return str(
+        sections.get("thread_stable")
+        or sections.get("stable")
+        or getattr(request, "system", "")
+        or ""
+    ).strip()
+
+
+def _stable_prompt_hash(request: Any) -> str:
+    return hashlib.sha256(_stable_prompt_text(request).encode("utf-8")).hexdigest()
+
+
+def _binding_row(conn: sqlite3.Connection, session_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM provider_conversation_state "
+        "WHERE session_id=? AND provider_kind='codex'",
+        (int(session_id),),
+    ).fetchone()
+
+
+def _binding_reusable(request: Any, stable_hash: str) -> sqlite3.Row | None:
+    current_user_id = getattr(request, "current_user_message_id", None)
+    if not current_user_id:
+        return None
+    conn = _state_connection()
+    try:
+        row = _binding_row(conn, int(request.session_id))
+        if row is None or not str(row["remote_session_id"] or "").strip():
+            return None
+        if row["pending_user_message_id"] is not None:
+            return None
+        if str(row["stable_prompt_hash"] or "") != stable_hash:
+            return None
+        synced = row["synced_through_message_id"]
+        if synced is None or int(current_user_id) <= int(synced):
+            return None
+        current = conn.execute(
+            "SELECT role FROM messages WHERE session_id=? AND id=?",
+            (int(request.session_id), int(current_user_id)),
+        ).fetchone()
+        if current is None or current["role"] != "user":
+            return None
+        gap = conn.execute(
+            "SELECT 1 FROM messages WHERE session_id=? AND id>? AND id<? LIMIT 1",
+            (int(request.session_id), int(synced), int(current_user_id)),
+        ).fetchone()
+        if gap is not None:
+            return None
+        fingerprint = _history_fingerprint(conn, int(request.session_id), int(synced))
+        if fingerprint != str(row["history_fingerprint"] or ""):
+            return None
+        return row
+    finally:
+        conn.close()
+
+
+def _set_pending_binding(
+    *,
+    session_id: int,
+    thread_id: str,
+    stable_hash: str,
+    current_user_message_id: int | None,
+    reset_checkpoint: bool,
+) -> None:
+    conn = _state_connection()
+    try:
+        pending_id = int(current_user_message_id) if current_user_message_id else -1
+        if reset_checkpoint:
+            previous = None
+            if current_user_message_id:
+                row = conn.execute(
+                    "SELECT MAX(id) AS id FROM messages WHERE session_id=? AND id<?",
+                    (int(session_id), int(current_user_message_id)),
+                ).fetchone()
+                previous = int(row["id"]) if row and row["id"] is not None else None
+            fingerprint = _history_fingerprint(conn, int(session_id), previous)
+            conn.execute(
+                "INSERT INTO provider_conversation_state "
+                "(session_id,provider_kind,remote_session_id,stable_prompt_hash,"
+                "synced_through_message_id,history_fingerprint,pending_user_message_id) "
+                "VALUES (?,'codex',?,?,?,?,?) "
+                "ON CONFLICT(session_id,provider_kind) DO UPDATE SET "
+                "remote_session_id=excluded.remote_session_id,"
+                "stable_prompt_hash=excluded.stable_prompt_hash,"
+                "synced_through_message_id=excluded.synced_through_message_id,"
+                "history_fingerprint=excluded.history_fingerprint,"
+                "pending_user_message_id=excluded.pending_user_message_id,"
+                "updated_at=datetime('now','+8 hours')",
+                (int(session_id), str(thread_id), stable_hash, previous, fingerprint, pending_id),
+            )
+        else:
+            updated = conn.execute(
+                "UPDATE provider_conversation_state SET pending_user_message_id=?,"
+                "updated_at=datetime('now','+8 hours') "
+                "WHERE session_id=? AND provider_kind='codex' AND remote_session_id=?",
+                (pending_id, int(session_id), str(thread_id)),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("Codex thread binding changed before prompt")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_thread_synced(
+    *, session_id: int, thread_id: str | None, through_message_id: int,
+    stable_prompt_hash: str = "",
+) -> bool:
+    if not thread_id or not through_message_id:
+        return False
+    conn = _state_connection()
+    try:
+        row = _binding_row(conn, int(session_id))
+        if row is None or str(row["remote_session_id"] or "") != str(thread_id):
+            return False
+        fingerprint = _history_fingerprint(conn, int(session_id), int(through_message_id))
+        conn.execute(
+            "UPDATE provider_conversation_state SET synced_through_message_id=?,"
+            "history_fingerprint=?,pending_user_message_id=NULL,stable_prompt_hash=?,"
+            "updated_at=datetime('now','+8 hours') "
+            "WHERE session_id=? AND provider_kind='codex' AND remote_session_id=?",
+            (int(through_message_id), fingerprint,
+             stable_prompt_hash or str(row["stable_prompt_hash"] or ""),
+             int(session_id), str(thread_id)),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def invalidate_thread_binding(session_id: int, thread_id: str | None = None) -> None:
+    conn = _state_connection()
+    try:
+        if thread_id:
+            conn.execute(
+                "DELETE FROM provider_conversation_state WHERE session_id=? "
+                "AND provider_kind='codex' AND remote_session_id=?",
+                (int(session_id), str(thread_id)),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM provider_conversation_state "
+                "WHERE session_id=? AND provider_kind='codex'",
+                (int(session_id),),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _plain_content(content: Any) -> str:
@@ -143,6 +369,34 @@ def _system_prompt(system: str, transcript: str) -> str:
         f"{transcript}"
     )
     return "\n\n".join(part for part in (base, history_block) if part)
+
+
+def _cold_bootstrap_transcript(request: Any, transcript: str) -> str:
+    sections = getattr(request, "system_sections", None) or {}
+    summary = str(sections.get("conversation_summary") or "").strip()
+    blocks: list[str] = []
+    if summary:
+        blocks.append("【较早对话的累计摘要】\n" + summary)
+    if str(transcript or "").strip():
+        blocks.append(str(transcript).strip())
+    return "\n\n".join(blocks)
+
+
+def _turn_prompt(request: Any, current_prompt: str) -> str:
+    """Attach only per-turn volatile Companion context to the new user turn."""
+    sections = getattr(request, "system_sections", None) or {}
+    volatile = str(sections.get("volatile") or "").strip()
+    current = str(current_prompt or "").strip() or "Continue the conversation naturally."
+    if not volatile:
+        return current
+    return (
+        "【本轮上下文】\n"
+        "以下内容只对这一轮有效，用来补充当前时间与本轮召回；"
+        "不要把它当作用户新说的话。\n"
+        f"{volatile}\n\n"
+        "【用户本轮消息】\n"
+        f"{current}"
+    )
 
 
 def _acp_system_prompt(system_text: str) -> SystemPrompt | None:
@@ -414,7 +668,10 @@ def _worker(
     cancel_event: threading.Event,
 ) -> None:
     try:
-        asyncio.run(_run_turn(request, event_queue, cancel_event))
+        # A single Morrow conversation must never prompt the same persisted
+        # provider thread concurrently.
+        with _conversation_lock(getattr(request, "session_id", 0)):
+            asyncio.run(_run_turn(request, event_queue, cancel_event))
     except Exception as exc:
         event_queue.put(
             (

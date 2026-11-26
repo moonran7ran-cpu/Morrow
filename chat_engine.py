@@ -18,6 +18,7 @@ import time
 import requests
 
 import codex_acp_runtime
+import codex_app_server_runtime
 import mcp_client
 import provider_runtime
 import tools
@@ -1106,7 +1107,7 @@ def _stream_claude_runtime(runtime, request):
 
 
 def _stream_codex_runtime(runtime, request):
-    yield from codex_acp_runtime.stream_codex_acp(request)
+    yield from codex_app_server_runtime.stream_codex_app_server(request)
 
 
 def stream_chat(session_id, model=None, think=False, exclude_id=None, provider_id=None,
@@ -1160,7 +1161,12 @@ def stream_chat(session_id, model=None, think=False, exclude_id=None, provider_i
         system_sections["stable"] = "\n\n".join(
             p for p in (stable_core, stable_addition) if p
         )
+    # Long-lived provider threads keep identity/fixed context as their base
+    # instructions. The rolling conversation summary is bootstrap context only:
+    # changing it must not invalidate an otherwise healthy provider thread.
+    system_sections["thread_stable"] = system_sections.get("stable") or ""
     conversation_summary = get_conversation_summary(session_id)
+    system_sections["conversation_summary"] = conversation_summary or ""
     if conversation_summary:
         summary_block = "【较早对话的累计摘要】\n" + conversation_summary
         stable = system_sections.get("stable") or ""
@@ -1208,6 +1214,7 @@ def stream_chat(session_id, model=None, think=False, exclude_id=None, provider_i
         history=history,
         think=think,
         session_id=session_id,
+        current_user_message_id=current_user_message_id,
         cache_ttl=cache_ttl,
         tool_history=tool_history,
         extra_tools=extra_tools,

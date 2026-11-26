@@ -120,6 +120,19 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TEXT    NOT NULL DEFAULT (datetime('now', '+8 hours'))
 );
 
+CREATE TABLE IF NOT EXISTS provider_conversation_state (
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    provider_kind TEXT NOT NULL,
+    remote_session_id TEXT NOT NULL DEFAULT '',
+    stable_prompt_hash TEXT NOT NULL DEFAULT '',
+    synced_through_message_id INTEGER,
+    history_fingerprint TEXT NOT NULL DEFAULT '',
+    pending_user_message_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+    PRIMARY KEY(session_id, provider_kind)
+);
+
 CREATE TABLE IF NOT EXISTS messages (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -3541,6 +3554,7 @@ def _stream_reply_impl(session_id, user_msg_id=None, model=None, think=False, re
     voice_visible_text = ""
     usage_log = []
     stream_error = None
+    provider_state = None
 
     def persist_stream_checkpoint(error="回复尚未收好"):
         """Save text/reasoning before an SSE write can be cut off by the client."""
@@ -3742,7 +3756,10 @@ def _stream_reply_impl(session_id, user_msg_id=None, model=None, think=False, re
             # page and database agree about the half reply.
             stream_error = {"message": str(exc) or exc.__class__.__name__}
             break
-        if kind == "reasoning":
+        if kind == "provider_state":
+            provider_state = payload if isinstance(payload, dict) else None
+            continue
+        elif kind == "reasoning":
             if reasoning_started_at is None:
                 reasoning_started_at = time.monotonic()
             if first_at[0] is None:
@@ -3948,8 +3965,34 @@ def _stream_reply_impl(session_id, user_msg_id=None, model=None, think=False, re
     push_event = None
     if not partial_error:
         push_event = _create_push_event(conn, session_id, msg_id, "message")
+    latest_row = conn.execute(
+        "SELECT MAX(id) AS id FROM messages WHERE session_id=?", (session_id,)
+    ).fetchone()
+    latest_message_id = int(latest_row["id"] or 0) if latest_row else 0
+    codex_sync_safe = not regen_id or int(regen_id) == latest_message_id
     conn.commit()
     conn.close()
+
+    # A provider thread is only a runtime room. Advance its Morrow checkpoint
+    # only after the canonical assistant row/version is committed. Regenerating
+    # an older reply changes chronology, so the next turn must rebuild from the
+    # Morrow ledger instead of trusting hidden provider history.
+    if provider_state and provider_state.get("kind") == "codex":
+        try:
+            if partial_error or not codex_sync_safe:
+                chat_engine.codex_acp_runtime.invalidate_thread_binding(
+                    session_id, provider_state.get("thread_id")
+                )
+            else:
+                chat_engine.codex_acp_runtime.mark_thread_synced(
+                    session_id=session_id,
+                    thread_id=provider_state.get("thread_id"),
+                    through_message_id=msg_id,
+                    stable_prompt_hash=provider_state.get("stable_prompt_hash") or "",
+                )
+        except Exception as exc:  # checkpoint failure must never lose chat text
+            app.logger.warning("codex thread checkpoint failed: %s", exc)
+
     if push_event:
         push_text = full_reply.strip() or voice_visible_text.strip() or "Morrow发来一条消息"
         threading.Thread(
