@@ -17,6 +17,7 @@ import time
 
 import requests
 
+import codex_acp_runtime
 import mcp_client
 import provider_runtime
 import tools
@@ -1101,6 +1102,10 @@ def _stream_claude_runtime(runtime, request):
     )
 
 
+def _stream_codex_runtime(runtime, request):
+    yield from codex_acp_runtime.stream_codex_acp(request)
+
+
 def stream_chat(session_id, model=None, think=False, exclude_id=None, provider_id=None,
                 context_limit=HISTORY_LIMIT, image_limit=None, latest_images_only=False,
                 cache_ttl="off", ephemeral_user_message="", stable_extra="",
@@ -1132,7 +1137,7 @@ def stream_chat(session_id, model=None, think=False, exclude_id=None, provider_i
     )
     fmt = runtime.kind
 
-    if not runtime.api_key:
+    if runtime.kind != "codex" and not runtime.api_key:
         yield ("error", {"status": None, "message": "这个供应商还没有配置 API key"})
         return
 
@@ -1216,7 +1221,11 @@ def stream_chat(session_id, model=None, think=False, exclude_id=None, provider_i
     yield from provider_runtime.stream_with_runtime(
         runtime,
         runtime_request,
-        adapters={"openai": _stream_openai_runtime, "claude": _stream_claude_runtime},
+        adapters={
+            "openai": _stream_openai_runtime,
+            "claude": _stream_claude_runtime,
+            "codex": _stream_codex_runtime,
+        },
     )
 
 

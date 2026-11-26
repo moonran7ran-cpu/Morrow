@@ -1,0 +1,8 @@
+{
+  "name": "morrow-codex-acp-runtime",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "2.12.0"
+  }
+}

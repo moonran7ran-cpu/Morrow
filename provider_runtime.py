@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
 
 
-SUPPORTED_PROVIDER_KINDS = frozenset({"openai", "claude"})
+SUPPORTED_PROVIDER_KINDS = frozenset({"openai", "claude", "codex"})
 
 
 @dataclass(frozen=True)
