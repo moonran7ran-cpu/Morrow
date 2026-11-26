@@ -3876,7 +3876,9 @@
               <button class="mini-btn" id="provCodexLogin" type="button">重新授权</button>
               <div id="provCodexInstructions" hidden style="margin-top:10px">
                 <div class="caption">设备码</div>
-                <div id="provCodexCode" style="font-size:18px;font-weight:700;letter-spacing:.08em;margin:4px 0 8px"></div>
+                <div id="provCodexCode" role="button" tabindex="0" aria-label="复制设备码"
+                     style="font-size:18px;font-weight:700;letter-spacing:.08em;margin:4px 0 8px;user-select:all;cursor:pointer"></div>
+                <button class="mini-btn" id="provCodexCopy" type="button" style="margin-right:8px">复制设备码</button>
                 <a class="mini-btn" id="provCodexUrl" target="_blank" rel="noopener noreferrer">打开 OpenAI 授权页面</a>
                 <div class="caption" style="margin-top:8px">授权完成后回到这里，点「检查状态」。</div>
               </div>
@@ -10425,6 +10427,10 @@ async function startCodexDeviceLogin(){
 }
 $("#provCodexCheck").onclick=refreshCodexAuthStatus;
 $("#provCodexLogin").onclick=startCodexDeviceLogin;
+function copyCodexDeviceCode(){const code=$("#provCodexCode").textContent.trim();if(code)copyText(code);}
+$("#provCodexCopy").onclick=copyCodexDeviceCode;
+$("#provCodexCode").onclick=copyCodexDeviceCode;
+$("#provCodexCode").onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();copyCodexDeviceCode();}};
 window.addEventListener("focus",()=>{if($("#provFormat").value==="codex"&&!$("#provCodexAuth").hidden)refreshCodexAuthStatus();});
 
 const PROVIDER_CACHE_MODES=[

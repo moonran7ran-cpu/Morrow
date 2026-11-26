@@ -140,6 +140,8 @@ class CodexProviderFrontendContractTest(unittest.TestCase):
         self.assertIn('label:"Codex Subscription"', html)
         self.assertIn('id="provCodexAuth"', html)
         self.assertIn('id="provCodexLogin"', html)
+        self.assertIn('id="provCodexCopy"', html)
+        self.assertIn('function copyCodexDeviceCode()', html)
         self.assertIn('api("/api/codex/status")', html)
         self.assertIn('api("/api/codex/login/device"', html)
         self.assertIn('url.hostname!=="auth.openai.com"', html)
