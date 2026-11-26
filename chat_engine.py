@@ -18,6 +18,7 @@ import time
 import requests
 
 import mcp_client
+import provider_runtime
 import tools
 import voice_engine
 from media_utils import detect_image_mime
@@ -1068,6 +1069,38 @@ def _sse_lines(resp):
         yield text
 
 
+def _stream_openai_runtime(runtime, request):
+    yield from _run_openai_tool_loop(
+        runtime.base_url, runtime.api_key, request.model, request.system,
+        request.history, request.think, request.session_id, runtime.provider_meta,
+        tool_history=request.tool_history, extra_tools=request.extra_tools,
+        extra_executor=request.extra_executor, extra_narrations=request.extra_narrations,
+        max_tool_rounds=request.max_tool_rounds,
+        closing_tool_names=request.closing_tool_names,
+        closing_prompt=request.closing_prompt,
+        round_observer=request.round_observer,
+        max_elapsed_seconds=request.max_elapsed_seconds,
+        base_tool_definitions=request.base_tool_definitions,
+    )
+
+
+def _stream_claude_runtime(runtime, request):
+    yield from _run_anthropic_tool_loop(
+        runtime.base_url, runtime.api_key, request.model, request.system_sections,
+        request.history, request.think, runtime.provider_meta, request.session_id,
+        cache_ttl=request.cache_ttl, tool_history=request.tool_history,
+        extra_tools=request.extra_tools, extra_executor=request.extra_executor,
+        extra_narrations=request.extra_narrations,
+        max_tool_rounds=request.max_tool_rounds,
+        closing_tool_names=request.closing_tool_names,
+        closing_prompt=request.closing_prompt,
+        round_observer=request.round_observer,
+        max_elapsed_seconds=request.max_elapsed_seconds,
+        base_tool_definitions=request.base_tool_definitions,
+        cache_profile=request.anthropic_cache_profile,
+    )
+
+
 def stream_chat(session_id, model=None, think=False, exclude_id=None, provider_id=None,
                 context_limit=HISTORY_LIMIT, image_limit=None, latest_images_only=False,
                 cache_ttl="off", ephemeral_user_message="", stable_extra="",
@@ -1091,19 +1124,15 @@ def stream_chat(session_id, model=None, think=False, exclude_id=None, provider_i
     assembled reply + its think-trace.
     """
     provider = get_provider(provider_id)
-    if provider:
-        base_url, api_key, fmt = provider["base_url"], provider["api_key"], provider["format"]
-        if format_override in ("openai", "claude"):
-            fmt = format_override
-        provider_meta = {"id": provider["id"], "name": provider["name"], "format": fmt,
-                         "cache_mode": provider.get("cache_mode") or "none"}
-    else:
-        base_url, api_key, fmt = LLM_BASE_URL, LLM_API_KEY, "openai"
-        if format_override in ("openai", "claude"):
-            fmt = format_override
-        provider_meta = {"id": None, "name": "env", "format": fmt, "cache_mode": "none"}
+    runtime = provider_runtime.resolve_provider_runtime(
+        provider,
+        fallback_base_url=LLM_BASE_URL,
+        fallback_api_key=LLM_API_KEY,
+        format_override=format_override,
+    )
+    fmt = runtime.kind
 
-    if not api_key:
+    if not runtime.api_key:
         yield ("error", {"status": None, "message": "这个供应商还没有配置 API key"})
         return
 
@@ -1164,32 +1193,31 @@ def stream_chat(session_id, model=None, think=False, exclude_id=None, provider_i
         if tool_history is not None:
             tool_history.append({"role": "user", "content": event_message})
 
-    if fmt == "claude":
-        yield from _run_anthropic_tool_loop(
-            base_url, api_key, chosen, system_sections, history, think, provider_meta,
-            session_id, cache_ttl=cache_ttl, tool_history=tool_history,
-            extra_tools=extra_tools, extra_executor=extra_executor,
-            extra_narrations=extra_narrations,
-            max_tool_rounds=max_tool_rounds,
-            closing_tool_names=closing_tool_names,
-            closing_prompt=closing_prompt,
-            round_observer=round_observer,
-            max_elapsed_seconds=max_elapsed_seconds,
-            base_tool_definitions=(tools.openai_tools(mcp_server_ids) if allow_tools else []),
-            cache_profile=anthropic_cache_profile,
-        )
-    else:
-        yield from _run_openai_tool_loop(
-            base_url, api_key, chosen, system, history, think, session_id, provider_meta,
-            tool_history=tool_history, extra_tools=extra_tools,
-            extra_executor=extra_executor, extra_narrations=extra_narrations,
-            max_tool_rounds=max_tool_rounds,
-            closing_tool_names=closing_tool_names,
-            closing_prompt=closing_prompt,
-            round_observer=round_observer,
-            max_elapsed_seconds=max_elapsed_seconds,
-            base_tool_definitions=(tools.openai_tools(mcp_server_ids) if allow_tools else []),
-        )
+    runtime_request = provider_runtime.ChatRuntimeRequest(
+        model=chosen,
+        system=system,
+        system_sections=system_sections,
+        history=history,
+        think=think,
+        session_id=session_id,
+        cache_ttl=cache_ttl,
+        tool_history=tool_history,
+        extra_tools=extra_tools,
+        extra_executor=extra_executor,
+        extra_narrations=extra_narrations,
+        max_tool_rounds=max_tool_rounds,
+        closing_tool_names=closing_tool_names,
+        closing_prompt=closing_prompt,
+        round_observer=round_observer,
+        max_elapsed_seconds=max_elapsed_seconds,
+        base_tool_definitions=(tools.openai_tools(mcp_server_ids) if allow_tools else []),
+        anthropic_cache_profile=anthropic_cache_profile,
+    )
+    yield from provider_runtime.stream_with_runtime(
+        runtime,
+        runtime_request,
+        adapters={"openai": _stream_openai_runtime, "claude": _stream_claude_runtime},
+    )
 
 
 def _run_openai_tool_loop(base_url, api_key, model, system, history, think, session_id,
