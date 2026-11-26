@@ -2,6 +2,7 @@ import asyncio
 import queue
 import threading
 import unittest
+from unittest import mock
 
 import codex_acp_runtime
 import provider_runtime
@@ -65,6 +66,17 @@ class CodexAcpRuntimeTest(unittest.TestCase):
         response = asyncio.run(client.request_permission())
         self.assertIsInstance(response.outcome, DeniedOutcome)
         self.assertEqual(response.outcome.outcome, "cancelled")
+
+    def test_default_codex_home_is_project_isolated(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"MORROW_CODEX_HOME": ""},
+            clear=False,
+        ):
+            _, _, codex_home, _ = codex_acp_runtime._runtime_paths()
+        self.assertEqual(codex_home, codex_acp_runtime._DEFAULT_CODEX_HOME)
+        self.assertIn("morrow-experiment-b/data/codex-home", str(codex_home))
+        self.assertTrue((codex_home / ".codex").is_dir())
 
     def test_device_login_parser_accepts_official_codex_output(self):
         text = (

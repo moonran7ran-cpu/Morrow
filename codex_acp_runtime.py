@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import pwd
 import queue
 import signal
 import threading
@@ -42,6 +41,7 @@ from acp.schema import (
 
 _ROOT = Path(__file__).resolve().parent
 _DEFAULT_ACP_BIN = _ROOT / "runtime" / "codex-acp" / "node_modules" / ".bin" / "codex-acp"
+_DEFAULT_CODEX_HOME = _ROOT / "data" / "codex-home"
 _DEFAULT_WORKDIR = _ROOT / "data" / "codex-workspace"
 _DONE = object()
 
@@ -180,15 +180,11 @@ def _runtime_paths() -> tuple[Path, str, Path, Path]:
     ).expanduser()
     codex_bin = os.environ.get("MORROW_CODEX_BIN", "/usr/bin/codex").strip()
     configured_home = os.environ.get("MORROW_CODEX_HOME", "").strip()
-    if configured_home:
-        codex_home = Path(configured_home).expanduser()
-    else:
-        username = pwd.getpwuid(os.getuid()).pw_name
-        candidates = (Path.home(), _ROOT.parent / ".home" / username)
-        codex_home = next(
-            (candidate for candidate in candidates if (candidate / ".codex").is_dir()),
-            candidates[-1],
-        )
+    codex_home = (
+        Path(configured_home).expanduser()
+        if configured_home
+        else _DEFAULT_CODEX_HOME
+    )
     workdir = Path(
         os.environ.get("MORROW_CODEX_WORKDIR", str(_DEFAULT_WORKDIR))
     ).expanduser()
@@ -197,9 +193,8 @@ def _runtime_paths() -> tuple[Path, str, Path, Path]:
         raise RuntimeError(f"codex-acp binary not found: {acp_bin}")
     if not Path(codex_bin).is_file():
         raise RuntimeError(f"Codex binary not found: {codex_bin}")
-    if not (codex_home / ".codex").is_dir():
-        raise RuntimeError(f"Codex login home not found: {codex_home}")
-
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / ".codex").mkdir(parents=True, exist_ok=True)
     workdir.mkdir(parents=True, exist_ok=True)
     return acp_bin, codex_bin, codex_home, workdir
 
