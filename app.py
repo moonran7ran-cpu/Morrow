@@ -4032,15 +4032,27 @@ def _stream_reply(session_id, user_msg_id=None, model=None, think=False, regen_i
     global _active_chat_requests
     with _active_chat_requests_lock:
         _active_chat_requests += 1
+    provider = chat_engine.get_provider(provider_id)
+    codex_lock = (
+        chat_engine.codex_acp_runtime._conversation_lock(session_id)
+        if provider and provider.get("format") == "codex" else None
+    )
+    stream = _stream_reply_impl(
+        session_id, user_msg_id=user_msg_id, model=model, think=think, regen_id=regen_id,
+        provider_id=provider_id, context_limit=context_limit, image_limit=image_limit,
+        latest_images_only=latest_images_only, cache_ttl=cache_ttl,
+        mcp_server_ids=mcp_server_ids,
+        sticker_prompt=sticker_prompt,
+        music_prompt=music_prompt,
+    )
     try:
-        yield from _stream_reply_impl(
-            session_id, user_msg_id=user_msg_id, model=model, think=think, regen_id=regen_id,
-            provider_id=provider_id, context_limit=context_limit, image_limit=image_limit,
-            latest_images_only=latest_images_only, cache_ttl=cache_ttl,
-            mcp_server_ids=mcp_server_ids,
-            sticker_prompt=sticker_prompt,
-            music_prompt=music_prompt,
-        )
+        if codex_lock is None:
+            yield from stream
+        else:
+            # Keep one conversation serialized until canonical SQLite persistence
+            # and the provider checkpoint/pending cleanup are both complete.
+            with codex_lock:
+                yield from stream
     finally:
         with _active_chat_requests_lock:
             _active_chat_requests = max(0, _active_chat_requests - 1)

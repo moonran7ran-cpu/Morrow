@@ -9,6 +9,7 @@ from unittest import mock
 import codex_acp_runtime as state
 import codex_app_server_runtime as runtime
 import provider_runtime
+import app as morrow_app
 
 
 STABLE = "Persistent conversation identity"
@@ -205,6 +206,43 @@ class CodexAppServerRuntimeTest(unittest.TestCase):
         provider_state = next(payload for kind, payload in events if kind == "provider_state")
         self.assertEqual(provider_state["thread_id"], "thread-new")
         self.assertFalse(provider_state["resumed"])
+
+    def test_app_holds_codex_conversation_lock_through_stream_completion(self):
+        events = []
+
+        class TrackingLock:
+            active = False
+
+            def __enter__(self):
+                self.active = True
+                events.append("lock-enter")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                events.append("lock-exit")
+                self.active = False
+
+        lock = TrackingLock()
+
+        def fake_stream(*args, **kwargs):
+            self.assertTrue(lock.active)
+            events.append("provider-turn")
+            yield "chunk"
+            self.assertTrue(lock.active)
+            events.append("sqlite-and-checkpoint-finished")
+
+        with mock.patch.object(morrow_app.chat_engine, "get_provider", return_value={"format": "codex"}), \
+             mock.patch.object(morrow_app.chat_engine.codex_acp_runtime, "_conversation_lock", return_value=lock), \
+             mock.patch.object(morrow_app, "_stream_reply_impl", side_effect=fake_stream):
+            self.assertEqual(list(morrow_app._stream_reply(1, provider_id=5)), ["chunk"])
+
+        self.assertFalse(lock.active)
+        self.assertEqual(events, [
+            "lock-enter",
+            "provider-turn",
+            "sqlite-and-checkpoint-finished",
+            "lock-exit",
+        ])
 
 
 if __name__ == "__main__":

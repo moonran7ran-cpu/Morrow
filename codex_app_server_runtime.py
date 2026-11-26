@@ -386,10 +386,9 @@ def _worker(
     cancel_event: threading.Event,
 ) -> None:
     try:
-        # One app-server notification stream is deliberately serialized in this
-        # first persistent-thread phase. Morrow itself remains multi-threaded.
-        with shared._conversation_lock(getattr(request, "session_id", 0)):
-            _run_turn(request, event_queue, cancel_event)
+        # End-to-end per-conversation serialization lives in app._stream_reply,
+        # so the lock also covers Morrow's SQLite commit and provider checkpoint.
+        _run_turn(request, event_queue, cancel_event)
     except Exception as exc:
         event_queue.put((
             "error",
