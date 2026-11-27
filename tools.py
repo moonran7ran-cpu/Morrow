@@ -12,7 +12,7 @@ Anthropic 的 tools schema），只是后端把调用转给谁执行不同。
   便签   read_note / write_note
   待办   read_todos / add_todo / complete_todo
   天气   get_weather（支持"今天下午/明天/现在"等任意时段）
-  记忆   write_memory / update_memory(id) / delete_memory(id)
+  记忆   write_memory / update_memory(id) / delete_memory(id)（实验 B 默认退役）
   Cycle get_cycle_status / get_intimacy_log / reply_to_intimacy_log(id)
   kept  browse_kept / read_kept / read_kept_by_date / search_kept
         write_kept / reply_kept
@@ -29,6 +29,7 @@ from datetime import datetime, timedelta
 
 import requests
 import mcp_client
+import native_memory
 import music_service
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "nook.db"))
@@ -1755,6 +1756,8 @@ def openai_tools(mcp_server_ids=None):
         return value
     out = []
     for name, (_fn, _narr, spec) in _REGISTRY.items():
+        if not native_memory.enabled() and name in native_memory.WRITE_TOOL_NAMES:
+            continue
         out.append({"type": "function", "function": {
             "name": name,
             "description": display(spec["description"]),
@@ -1804,6 +1807,11 @@ def execute(name, args, session_id=None):
                 "duration_ms": round((time.perf_counter() - started) * 1000),
                 "source": "mcp", "server": server["name"], "tool": tool["name"],
                 "tool_meta": _mcp_tool_snapshot(server, tool)}
+    if not native_memory.enabled() and name in native_memory.WRITE_TOOL_NAMES:
+        error = native_memory.blocked_message()
+        return {"ok": False, "content": f"（{error}）", "error": error,
+                "duration_ms": round((time.perf_counter() - started) * 1000),
+                "source": "builtin", "server": ""}
     item = _REGISTRY.get(name)
     if not item:
         error = f"没有名为 {name} 的工具。"

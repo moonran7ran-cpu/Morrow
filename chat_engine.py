@@ -22,6 +22,7 @@ import codex_app_server_runtime
 import mcp_client
 import provider_runtime
 import tools
+import native_memory
 import voice_engine
 from media_utils import detect_image_mime
 
@@ -496,21 +497,22 @@ def build_system_sections(recall_query=None, recall_session_id=None, recall_user
     )
     volatile = []
 
-    memory = get_memory_entries("fixed")
-    if memory:
-        block = "\n".join(f"ෆ{mid} {content.strip()}" for mid, content in memory)
-        stable.append(
-            "【需要一直记得的事】（每条前面 ෆ 后的数字是它的 id，"
-            "改写/删除某条记忆时用这个 id）\n" + block
-        )
-    dynamic = get_relevant_dynamic_memories(recall_query)
-    if dynamic:
-        record_dynamic_memory_recall(recall_session_id, dynamic)
-        block = "\n".join(f"ต{mid} {content.strip()}" for mid, content in dynamic)
-        volatile.append(
-            "【本轮相关动态记忆】（这些只因当前消息命中标签而出现；"
-            "每条前面 ต 后的数字是动态记忆 id）\n" + block
-        )
+    if native_memory.enabled():
+        memory = get_memory_entries("fixed")
+        if memory:
+            block = "\n".join(f"ෆ{mid} {content.strip()}" for mid, content in memory)
+            stable.append(
+                "【需要一直记得的事】（每条前面 ෆ 后的数字是它的 id，"
+                "改写/删除某条记忆时用这个 id）\n" + block
+            )
+        dynamic = get_relevant_dynamic_memories(recall_query)
+        if dynamic:
+            record_dynamic_memory_recall(recall_session_id, dynamic)
+            block = "\n".join(f"ต{mid} {content.strip()}" for mid, content in dynamic)
+            volatile.append(
+                "【本轮相关动态记忆】（这些只因当前消息命中标签而出现；"
+                "每条前面 ต 后的数字是动态记忆 id）\n" + block
+            )
     ombre_memories = get_relevant_ombre_memories(
         recall_query, recall_session_id, recall_user_message_id
     )

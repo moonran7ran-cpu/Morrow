@@ -4,6 +4,7 @@ import shutil
 import sqlite3
 import unittest
 import uuid
+from unittest import mock
 from pathlib import Path
 
 import app
@@ -52,7 +53,8 @@ class MemoryRecentTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        sections = chat_engine.build_system_sections("今天买草莓吗", recall_session_id=session_id)
+        with mock.patch.dict(os.environ, {"MORROW_NATIVE_MEMORY_ENABLED": "1"}):
+            sections = chat_engine.build_system_sections("今天买草莓吗", recall_session_id=session_id)
         self.assertIn("草莓季", sections["volatile"])
         self.assertNotIn("下雨天", sections["volatile"])
 
@@ -84,10 +86,11 @@ class MemoryRecentTest(unittest.TestCase):
     def test_memory_page_keeps_dialog_logic_and_uses_capsule_navigation(self):
         page = Path("static/index.html").read_text(encoding="utf-8")
         self.assertIn('id="memPersonaPanel" hidden', page)
-        self.assertIn('id="memRecentList"', page)
+        self.assertIn('id="memRecentList" hidden', page)
+        self.assertIn('Forever / Fragment 已停用', page)
+        self.assertIn('class="mem-manage-head" hidden', page)
         self.assertIn('data-kind="fixed" class="on">Forever</button>', page)
         self.assertIn('data-kind="dynamic">Fragment</button>', page)
-        self.assertNotIn('Forever / Fragment', page)
         self.assertNotIn('<div class="page-title mem-page-title">memory</div>', page)
         self.assertNotIn('class="mem-header-botanical"', page)
         self.assertNotIn('id="memoryDrawer"', page)

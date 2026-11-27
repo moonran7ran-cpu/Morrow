@@ -22,6 +22,7 @@ from urllib.parse import quote
 
 import requests
 import identity
+import native_memory
 import greeting_settings
 import postcard_settings
 import note_service
@@ -4190,6 +4191,8 @@ def recent_memory_recalls():
 @app.post("/api/memory/entries")
 @require_auth
 def create_entry():
+    if not native_memory.enabled():
+        return jsonify({"error": native_memory.blocked_message()}), 409
     data = request.get_json(silent=True) or {}
     content = (data.get("content") or "").strip()
     if not content:
@@ -4215,6 +4218,8 @@ def create_entry():
 @app.put("/api/memory/entries/<int:entry_id>")
 @require_auth
 def update_entry(entry_id):
+    if not native_memory.enabled():
+        return jsonify({"error": native_memory.blocked_message()}), 409
     data = request.get_json(silent=True) or {}
     db = get_db()
     row = db.execute(
@@ -4239,6 +4244,8 @@ def update_entry(entry_id):
 @app.delete("/api/memory/entries/<int:entry_id>")
 @require_auth
 def delete_entry(entry_id):
+    if not native_memory.enabled():
+        return jsonify({"error": native_memory.blocked_message()}), 409
     db = get_db()
     db.execute("DELETE FROM memory_entries WHERE id = ?", (entry_id,))
     db.commit()
