@@ -272,6 +272,32 @@ def invalidate_thread_binding(session_id: int, thread_id: str | None = None) -> 
         conn.close()
 
 
+def _local_image_inputs(content: Any) -> list[dict[str, Any]]:
+    """Return only validated Morrow-upload images as Codex localImage inputs."""
+    items = content if isinstance(content, list) else [content]
+    root = (_db_path().parent / "uploads").resolve()
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("type") != "localImage":
+            continue
+        raw = str(item.get("path") or "").strip()
+        if not raw:
+            continue
+        try:
+            candidate = Path(raw).expanduser().resolve()
+            candidate.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if not candidate.is_file():
+            continue
+        out.append({
+            "type": "localImage",
+            "path": str(candidate),
+            "detail": "auto",
+        })
+    return out
+
+
 def _plain_content(content: Any) -> str:
     """Convert Morrow/OpenAI-style message content into readable plain text."""
 
@@ -290,6 +316,9 @@ def _plain_content(content: Any) -> str:
             text = item.get("text")
             if isinstance(text, str):
                 parts.append(text)
+                continue
+            if item.get("type") == "localImage":
+                parts.append("[image attachment]")
                 continue
             if item.get("type") in {
                 "image_url",
@@ -355,6 +384,8 @@ def _split_history(history: list[dict[str, Any]]) -> tuple[str, str]:
         if line
     )
     current = _plain_content(history[current_index].get("content")).strip()
+    if not current and _local_image_inputs(history[current_index].get("content")):
+        current = "Respond naturally to the attached image or images."
     return transcript, current or "Continue the conversation naturally."
 
 

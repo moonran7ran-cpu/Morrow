@@ -57,6 +57,26 @@ class ImageMimeTest(unittest.TestCase):
         anthropic_part = chat_engine._attachment_parts([attachment], target="anthropic")[0]
         self.assertEqual(anthropic_part["source"]["media_type"], "image/png")
 
+    def test_codex_attachment_uses_validated_local_image_path(self):
+        path = "codex-image.png"
+        full = os.path.realpath(os.path.join(self.root, path))
+        with open(full, "wb") as f:
+            f.write(PNG_BYTES)
+        attachment = {"type": "image", "path": path, "mime": "image/png"}
+
+        codex_part = chat_engine._attachment_parts([attachment], target="codex")[0]
+        self.assertEqual(codex_part, {
+            "type": "localImage",
+            "path": full,
+            "detail": "auto",
+        })
+        self.assertEqual(
+            chat_engine._attachment_parts(
+                [{"type": "image", "path": "../../etc/passwd", "mime": "image/png"}],
+                target="codex",
+            ), []
+        )
+
     def test_tool_copy_variant_uses_copy_and_falls_back_to_original(self):
         original_path = "original.png"
         copy_path = "tool-copy.jpg"

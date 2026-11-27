@@ -227,6 +227,41 @@ _APP_SERVER = _AppServer()
 atexit.register(_APP_SERVER.shutdown)
 
 
+def _text_input(text: str) -> dict[str, Any]:
+    return {"type": "text", "text": text, "text_elements": []}
+
+
+def _turn_inputs(request: Any, current_prompt: str, *, cold_start: bool) -> list[dict[str, Any]]:
+    history = list(getattr(request, "history", None) or [])
+    current_index: int | None = None
+    for index in range(len(history) - 1, -1, -1):
+        if str(history[index].get("role") or "").lower() == "user":
+            current_index = index
+            break
+
+    inputs: list[dict[str, Any]] = []
+    if cold_start:
+        prior = history if current_index is None else history[:current_index]
+        for message in prior:
+            images = shared._local_image_inputs(message.get("content"))
+            if not images:
+                continue
+            role = str(message.get("role") or "user").strip().lower()
+            text = shared._plain_content(message.get("content")).replace(
+                "[image attachment]", ""
+            ).strip()
+            label = f"【Historical image attachment from earlier {role} message】"
+            if text:
+                label += "\n" + text
+            inputs.append(_text_input(label))
+            inputs.extend(images)
+
+    inputs.append(_text_input(shared._turn_prompt(request, current_prompt)))
+    if current_index is not None:
+        inputs.extend(shared._local_image_inputs(history[current_index].get("content")))
+    return inputs
+
+
 def _run_turn(
     request: Any,
     event_queue: queue.Queue[Any],
@@ -243,6 +278,7 @@ def _run_turn(
         _APP_SERVER.drain_notifications()
         thread_id: str | None = None
         resumed = False
+        cold_started = False
 
         if binding is not None:
             candidate = str(binding["remote_session_id"] or "").strip()
@@ -271,6 +307,7 @@ def _run_turn(
                     thread_id = None
 
         if thread_id is None:
+            cold_started = True
             bootstrap = shared._cold_bootstrap_transcript(request, transcript)
             system_text = shared._system_prompt(shared._stable_prompt_text(request), bootstrap)
             params: dict[str, Any] = {
@@ -318,11 +355,7 @@ def _run_turn(
         _APP_SERVER.drain_notifications()
         turn_params: dict[str, Any] = {
             "threadId": thread_id,
-            "input": [{
-                "type": "text",
-                "text": shared._turn_prompt(request, current_prompt),
-                "text_elements": [],
-            }],
+            "input": _turn_inputs(request, current_prompt, cold_start=cold_started),
             "cwd": str(workdir),
             "approvalPolicy": "never",
             "sandboxPolicy": {"type": "readOnly", "networkAccess": False},

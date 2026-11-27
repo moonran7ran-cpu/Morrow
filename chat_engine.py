@@ -541,6 +541,22 @@ def get_provider(provider_id):
     }
 
 
+def _safe_upload_image_path(attachment):
+    if not isinstance(attachment, dict):
+        return None
+    name = os.path.basename(str(attachment.get("path") or ""))
+    if not name:
+        return None
+    root = os.path.realpath(UPLOAD_DIR)
+    full = os.path.realpath(os.path.join(root, name))
+    try:
+        if os.path.commonpath((root, full)) != root:
+            return None
+    except ValueError:
+        return None
+    return full if os.path.isfile(full) else None
+
+
 def _attachment_parts(attachments, target="openai", image_variant="original"):
     parts = []
     for a in attachments or []:
@@ -549,14 +565,15 @@ def _attachment_parts(attachments, target="openai", image_variant="original"):
         selected = a
         if image_variant == "tool_copy" and isinstance(a.get("tool_copy"), dict):
             selected = a["tool_copy"]
-        path = os.path.basename(selected.get("path") or "")
-        full = os.path.join(UPLOAD_DIR, path)
-        if not path or not os.path.isfile(full):
+        full = _safe_upload_image_path(selected)
+        if not full:
             selected = a
-            path = os.path.basename(a.get("path") or "")
-            full = os.path.join(UPLOAD_DIR, path)
-            if not path or not os.path.isfile(full):
+            full = _safe_upload_image_path(a)
+            if not full:
                 continue
+        if target == "codex":
+            parts.append({"type": "localImage", "path": full, "detail": "auto"})
+            continue
         try:
             with open(full, "rb") as f:
                 blob = f.read()
@@ -717,7 +734,7 @@ def _history_time_prefix(created_at):
 
 def get_history(session_id, limit=HISTORY_LIMIT, exclude_id=None, include_images=True,
                 image_limit=None, latest_images_only=False, image_variant="original",
-                current_user_message_id=None):
+                current_user_message_id=None, target="openai"):
     """Recent messages for a session as OpenAI-format dicts, oldest first.
 
     `content` already mirrors each message's *active* version, so the context
@@ -968,6 +985,7 @@ def get_history(session_id, limit=HISTORY_LIMIT, exclude_id=None, include_images
             out.append({
                 "role": r["role"],
                 "content": _message_content(message_text, sent_attachments,
+                                            target=target,
                                             include_images=include_images,
                                             image_variant=image_variant),
             })
@@ -1179,14 +1197,16 @@ def stream_chat(session_id, model=None, think=False, exclude_id=None, provider_i
             p for p in (system_sections.get("volatile"), str(volatile_extra).strip()) if p
         )
     system = "\n\n".join(p for p in (system_sections["stable"], system_sections["volatile"]) if p)
+    provider_supports_images = runtime.kind == "codex" or model_supports_images(chosen, fmt)
     history = get_history(
         session_id,
         limit=context_limit,
         exclude_id=exclude_id,
-        include_images=model_supports_images(chosen, fmt),
+        include_images=provider_supports_images,
         image_limit=image_limit,
         latest_images_only=latest_images_only,
         current_user_message_id=current_user_message_id,
+        target="codex" if runtime.kind == "codex" else "openai",
     )
     tool_history = (
         get_history(

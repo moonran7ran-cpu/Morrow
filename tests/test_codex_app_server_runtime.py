@@ -101,7 +101,7 @@ class CodexAppServerRuntimeTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
-    def _request(self):
+    def _request(self, history=None):
         return provider_runtime.ChatRuntimeRequest(
             model="",
             system=STABLE,
@@ -111,7 +111,7 @@ class CodexAppServerRuntimeTest(unittest.TestCase):
                 "volatile": "per-turn context",
                 "conversation_summary": "",
             },
-            history=[{"role": "user", "content": "u2"}],
+            history=history or [{"role": "user", "content": "u2"}],
             think=False,
             session_id=1,
             current_user_message_id=3,
@@ -206,6 +206,62 @@ class CodexAppServerRuntimeTest(unittest.TestCase):
         provider_state = next(payload for kind, payload in events if kind == "provider_state")
         self.assertEqual(provider_state["thread_id"], "thread-new")
         self.assertFalse(provider_state["resumed"])
+
+    def test_live_thread_sends_current_local_image_without_new_thread(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = str(Path(tempdir) / "chat.sqlite3")
+            self._db(db_path)
+            uploads = Path(tempdir) / "uploads"
+            uploads.mkdir()
+            image_path = uploads / "current.png"
+            image_path.write_bytes(b"png")
+            history = [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look at this"},
+                    {"type": "localImage", "path": str(image_path), "detail": "auto"},
+                ],
+            }]
+            with mock.patch.dict("os.environ", {"DB_PATH": db_path}, clear=False):
+                request = self._request(history)
+                self._seed_binding(request)
+                fake = _FakeAppServer(live={"thread-1"})
+                self._run_with_fake(fake, request)
+        methods = [method for method, _ in fake.calls]
+        self.assertNotIn("thread/start", methods)
+        turn = next(params for method, params in fake.calls if method == "turn/start")
+        self.assertEqual([item["type"] for item in turn["input"]], ["text", "localImage"])
+        self.assertEqual(turn["input"][1]["path"], str(image_path.resolve()))
+
+    def test_cold_rebuild_replays_historical_local_images(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = str(Path(tempdir) / "chat.sqlite3")
+            self._db(db_path)
+            uploads = Path(tempdir) / "uploads"
+            uploads.mkdir()
+            image_path = uploads / "history.png"
+            image_path.write_bytes(b"png")
+            history = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "historical picture"},
+                        {"type": "localImage", "path": str(image_path), "detail": "auto"},
+                    ],
+                },
+                {"role": "assistant", "content": "I saw it."},
+                {"role": "user", "content": "what was in that picture?"},
+            ]
+            with mock.patch.dict("os.environ", {"DB_PATH": db_path}, clear=False):
+                request = self._request(history)
+                fake = _FakeAppServer(started_thread="thread-cold")
+                self._run_with_fake(fake, request)
+        turn = next(params for method, params in fake.calls if method == "turn/start")
+        types = [item["type"] for item in turn["input"]]
+        self.assertIn("localImage", types)
+        image = next(item for item in turn["input"] if item["type"] == "localImage")
+        self.assertEqual(image["path"], str(image_path.resolve()))
+        self.assertIn("Historical image attachment", turn["input"][0]["text"])
 
     def test_app_holds_codex_conversation_lock_through_stream_completion(self):
         events = []
