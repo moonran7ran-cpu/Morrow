@@ -80,6 +80,34 @@ def get_persona():
     return DEFAULT_PERSONA
 
 
+COMPANION_STABLE_SETTINGS = (
+    ("companion_user_profile", "【染染｜稳定 Profile】"),
+    ("companion_relationship_core", "【阿砚与我们｜稳定 Identity / Relationship】"),
+    ("companion_user_prompt", "【用户 Prompt｜明确指令】"),
+)
+
+
+def get_companion_stable_sections():
+    """Return editable stable companion context without using long-term memory."""
+    try:
+        conn = _connect()
+        keys = tuple(key for key, _ in COMPANION_STABLE_SETTINGS)
+        rows = {
+            row["key"]: (row["value"] or "").strip()
+            for row in conn.execute(
+                "SELECT key, value FROM settings WHERE key IN (?,?,?)", keys
+            ).fetchall()
+        }
+        conn.close()
+    except sqlite3.Error:
+        rows = {}
+    return [
+        f"{title}\n{rows[key]}"
+        for key, title in COMPANION_STABLE_SETTINGS
+        if rows.get(key)
+    ]
+
+
 def get_memory_entries(kind="fixed"):
     """Memory entries as (id, content), oldest first.
 
@@ -457,10 +485,15 @@ def build_system_sections(recall_query=None, recall_session_id=None, recall_user
     """
     import identity
     names = identity.get_identity(db_path=DB_PATH)
-    stable = [get_persona().strip(),
-              "【当前称呼】\n" + json.dumps({"用户": names["user_name"], "助手": names["assistant_name"]}, ensure_ascii=False)
-              + "\n以上是当前显示称呼；历史记录可能保留旧称呼。用户以她称呼，助手的第三人称代称为"
-              + names["assistant_pronoun"] + "。代称不改写既有人设或历史内容。"]
+    stable = get_companion_stable_sections()
+    legacy_persona = get_persona().strip()
+    if legacy_persona:
+        stable.append("【旧版 Persona｜兼容】\n" + legacy_persona)
+    stable.append(
+        "【当前称呼】\n" + json.dumps({"用户": names["user_name"], "助手": names["assistant_name"]}, ensure_ascii=False)
+        + "\n以上是当前显示称呼；历史记录可能保留旧称呼。用户以她称呼，助手的第三人称代称为"
+        + names["assistant_pronoun"] + "。代称不改写既有人设或历史内容。"
+    )
     volatile = []
 
     memory = get_memory_entries("fixed")

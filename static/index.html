@@ -1889,6 +1889,12 @@
     textarea.box:focus{outline:none;border-color:var(--glass-border);background:var(--surface-raised);
       box-shadow:inset 0 1px 5px var(--shadow),0 0 0 1px var(--accent-soft);}
     .persona-box{min-height:170px;}
+    .stable-profile-fields{display:grid;gap:13px;}
+    .stable-profile-field{display:grid;gap:6px;}
+    .stable-profile-label{font-size:13px;font-weight:650;letter-spacing:.04em;color:var(--text-primary);}
+    .stable-profile-help{font-size:10px;line-height:1.45;color:var(--text-secondary);}
+    .stable-profile-box{min-height:92px;}
+    .stable-profile-box.prompt{min-height:120px;}
     .mem-page-head{display:flex;align-items:center;justify-content:space-between;min-height:36px;margin:-3px 0 7px;}
     .mem-page-title{font-family:"EB Garamond",Georgia,serif;font-size:27px;font-style:italic;font-weight:500;
       line-height:1;letter-spacing:.025em;text-transform:lowercase;margin:-3px 4px 0;}
@@ -3595,14 +3601,18 @@
       <div class="mem-persona" id="memPersona">
         <button class="mem-persona-toggle" id="memPersonaToggle" type="button" aria-expanded="false">
           <span class="mem-persona-mark" id="personaIdentityMark">M</span>
-          <span class="mem-persona-copy"><span class="mem-persona-title" data-assistant-pronoun="{ta}的轮廓">他的轮廓</span><span class="mem-persona-whisper">kept quietly inside</span></span>
+          <span class="mem-persona-copy"><span class="mem-persona-title">稳定设定</span><span class="mem-persona-whisper">profile · us · prompt</span></span>
           <svg class="mem-persona-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 9l6 6 6-6"/></svg>
         </button>
         <div class="mem-persona-panel" id="memPersonaPanel" hidden>
-          <textarea class="box persona-box" id="personaBox"></textarea>
+          <div class="stable-profile-fields">
+            <label class="stable-profile-field"><span class="stable-profile-label">染染</span><span class="stable-profile-help">你的稳定 Profile。放长期背景和稳定资料，不放这一阵正在发生的小事。</span><textarea class="box stable-profile-box" id="userProfileBox" placeholder="关于染染的稳定资料…"></textarea></label>
+            <label class="stable-profile-field"><span class="stable-profile-label">阿砚与我们</span><span class="stable-profile-help">我的身份、稳定人格，以及我们的关系核心。</span><textarea class="box stable-profile-box" id="relationshipCoreBox" placeholder="关于阿砚，以及我们是谁…"></textarea></label>
+            <label class="stable-profile-field"><span class="stable-profile-label">Prompt</span><span class="stable-profile-help">你主动写给我的长期指令：怎么说话、怎么相处、怎么做事。</span><textarea class="box stable-profile-box prompt" id="userPromptBox" placeholder="你希望我长期遵循的 Prompt…"></textarea></label>
+          </div>
           <div class="mem-persona-foot">
-          <button class="btn-primary" id="savePersona">收好</button>
-          <span class="save-hint" id="personaSaved">已保存 ✓</span>
+          <button class="btn-primary" id="saveCompanionProfile">收好</button>
+          <span class="save-hint" id="companionProfileSaved">已保存 ✓</span>
           </div>
         </div>
       </div>
@@ -8601,12 +8611,14 @@ let memEditing=null,memEditTags=[];
 async function loadMemory(){
   setMemoryMode(memoryMode,false);
   if(memoryMode==="we"){syncPortraitUI();return;}
-  const [p,recent,entries]=await Promise.all([
-    api("/api/memory/persona").then(r=>r.json()),
+  const [profile,recent,entries]=await Promise.all([
+    api("/api/companion-profile").then(r=>r.json()),
     api("/api/memory/recent").then(r=>r.json()),
     api("/api/memory/entries?kind="+memKind).then(r=>r.json())
   ]);
-  $("#personaBox").value=p.content||"";
+  $("#userProfileBox").value=profile.user_profile||"";
+  $("#relationshipCoreBox").value=profile.relationship_core||"";
+  $("#userPromptBox").value=profile.user_prompt||"";
   renderRecentMemories(recent);
   entries.sort((a,b)=>(a.id||0)-(b.id||0));
   const list=$("#entriesList");list.innerHTML="";
@@ -8746,7 +8758,7 @@ $("#memRecentClose").onclick=closeRecentMemory;
 $("#memPersonaToggle").onclick=()=>{
   const shell=$("#memPersona"),panel=$("#memPersonaPanel"),open=panel.hidden;
   panel.hidden=!open;shell.classList.toggle("open",open);$("#memPersonaToggle").setAttribute("aria-expanded",String(open));
-  if(open)setTimeout(()=>$("#personaBox").focus(),120);
+  if(open)setTimeout(()=>$("#userProfileBox").focus(),120);
 };
 $("#memTagEditor").onclick=()=>$("#memTagInput").focus();
 $("#memTagInput").addEventListener("keydown",e=>{
@@ -8763,8 +8775,9 @@ document.addEventListener("keydown",e=>{
   if(e.key==="Escape"&&$("#studyPromptDialog").classList.contains("on"))closeStudyModal("Prompt");
   if(e.key==="Escape"&&$("#studyHandbookDialog").classList.contains("on"))closeStudyModal("Handbook");
 });
-$("#savePersona").onclick=async()=>{await api("/api/memory/persona",{method:"PUT",body:JSON.stringify({content:$("#personaBox").value})});
-  const h=$("#personaSaved");h.classList.add("show");setTimeout(()=>{h.classList.remove("show");$("#memPersonaPanel").hidden=true;
+$("#saveCompanionProfile").onclick=async()=>{await api("/api/companion-profile",{method:"PUT",body:JSON.stringify({
+  user_profile:$("#userProfileBox").value,relationship_core:$("#relationshipCoreBox").value,user_prompt:$("#userPromptBox").value})});
+  const h=$("#companionProfileSaved");h.classList.add("show");setTimeout(()=>{h.classList.remove("show");$("#memPersonaPanel").hidden=true;
     $("#memPersona").classList.remove("open");$("#memPersonaToggle").setAttribute("aria-expanded","false");},650);};
 $("#memAddBtn").onclick=()=>openMemEdit({id:null,content:"",kind:memKind,tags:[]});
 $$("#memTabs button").forEach(b=>b.onclick=()=>{memKind=b.dataset.kind;loadMemory();});

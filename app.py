@@ -4355,6 +4355,45 @@ def set_setting(key, value):
     db.commit()
 
 
+COMPANION_PROFILE_KEYS = {
+    "user_profile": "companion_user_profile",
+    "relationship_core": "companion_relationship_core",
+    "user_prompt": "companion_user_prompt",
+}
+COMPANION_PROFILE_MAX_CHARS = 20000
+
+
+@app.route("/api/companion-profile", methods=["GET", "PUT"])
+@require_auth
+def companion_profile_settings():
+    if request.method == "GET":
+        return jsonify({name: get_setting(key) for name, key in COMPANION_PROFILE_KEYS.items()})
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    clean = {}
+    for name, key in COMPANION_PROFILE_KEYS.items():
+        if name not in data:
+            continue
+        value = data[name]
+        if not isinstance(value, str):
+            return jsonify({"error": f"{name} must be text"}), 400
+        if len(value) > COMPANION_PROFILE_MAX_CHARS:
+            return jsonify({"error": f"{name} is too long"}), 400
+        clean[key] = value
+    if not clean:
+        return jsonify({"error": "no supported fields"}), 400
+    db = get_db()
+    for key, value in clean.items():
+        db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+    db.commit()
+    return jsonify({name: get_setting(key) for name, key in COMPANION_PROFILE_KEYS.items()})
+
+
 @app.route("/api/together-date", methods=["GET", "PUT"])
 @require_auth
 def together_date_settings():
